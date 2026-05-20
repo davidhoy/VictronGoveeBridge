@@ -65,7 +65,7 @@ def instance_seed(mac: str) -> int:
 
 
 class GoveeSensor:
-    def __init__(self, mac: str, friendly_name: str, bus: dbus.SystemBus) -> None:
+    def __init__(self, mac: str, friendly_name: str, settings_bus: dbus.Bus) -> None:
         self.mac = mac
         self.slug = mac_to_slug(mac)
         self.last_seen: float = 0.0
@@ -73,7 +73,7 @@ class GoveeSensor:
         seed = instance_seed(mac)
         settings_root = f"/Settings/Devices/govee_{self.slug}"
         self.settings = SettingsDevice(
-            bus=bus,
+            bus=settings_bus,
             supportedSettings={
                 "instance": [
                     f"{settings_root}/ClassAndVrmInstance",
@@ -87,6 +87,12 @@ class GoveeSensor:
                     0,
                     0,
                 ],
+                "temperaturetype": [
+                    f"{settings_root}/TemperatureType",
+                    2,  # 2 = generic; user can change in the GUI
+                    0,
+                    5,
+                ],
             },
             eventCallback=self._on_setting_changed,
         )
@@ -94,8 +100,11 @@ class GoveeSensor:
         _, instance_str = self.settings["instance"].split(":")
         self.device_instance = int(instance_str)
 
+        # Each VeDbusService registers '/' on its connection, so the bus must
+        # be private — one shared bus would collide on the second sensor.
+        self._svc_bus = dbus.SystemBus(private=True)
         service_name = f"com.victronenergy.temperature.govee_{self.slug}"
-        self.svc = VeDbusService(service_name, bus=bus, register=False)
+        self.svc = VeDbusService(service_name, bus=self._svc_bus, register=False)
 
         self.svc.add_path("/DeviceInstance", self.device_instance)
         self.svc.add_path("/ProductId", PRODUCT_ID)
@@ -110,10 +119,18 @@ class GoveeSensor:
 
         self.svc.add_path("/Temperature", None)
         self.svc.add_path("/Humidity", None)
-        self.svc.add_path("/TemperatureType", 2)  # 2 = generic
         self.svc.add_path("/BatteryVoltage", None)
 
-        # writeable from the GUI; we mirror back into localsettings on change
+        # Writeable from the GUI; we mirror changes back into localsettings
+        # so they persist across restarts. TemperatureType uses Victron's
+        # standard codes: 0=battery, 1=fridge, 2=generic, 3=room, 4=outdoor,
+        # 5=water heater.
+        self.svc.add_path(
+            "/TemperatureType",
+            int(self.settings["temperaturetype"]),
+            writeable=True,
+            onchangecallback=self._on_temperaturetype_changed,
+        )
         self.svc.add_path(
             "/CustomName",
             self.settings["customname"],
@@ -131,9 +148,21 @@ class GoveeSensor:
                 self.svc["/CustomName"] = newvalue
             except Exception:
                 pass
+        elif setting == "temperaturetype":
+            try:
+                self.svc["/TemperatureType"] = int(newvalue)
+            except Exception:
+                pass
 
     def _on_customname_changed(self, path, newvalue):
         self.settings["customname"] = newvalue
+        return True
+
+    def _on_temperaturetype_changed(self, path, newvalue):
+        try:
+            self.settings["temperaturetype"] = int(newvalue)
+        except (TypeError, ValueError):
+            return False
         return True
 
     def update(self, temp_c: float, humidity: float, battery_pct: int) -> None:
@@ -273,7 +302,8 @@ class GoveeBridge:
                 log.exception("failed to register sensor %s", mac)
                 return
             self.sensors[mac.upper()] = sensor
-            log.info("discovered new H5074 %s (%s)", mac, friendly)
+            log.info("discovered new H5074 %s (%s) as DeviceInstance %d",
+                     mac, friendly, sensor.device_instance)
 
         sensor.update(temp_c, humidity, battery)
 
