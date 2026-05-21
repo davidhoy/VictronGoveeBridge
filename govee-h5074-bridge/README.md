@@ -11,8 +11,8 @@ on-board BLE radio and registers each sensor as a
 /data/govee-h5074-bridge/
 ├── bridge.py           # main service
 ├── install.sh          # idempotent installer
-├── service/run         # runit start script
-├── service/log/run     # runit logger
+├── service/run         # daemontools start script
+├── service/log/run     # multilog logger
 └── vedbus.py + ve_utils.py + settingsdevice.py  # copied from /opt by install.sh
 ```
 
@@ -25,7 +25,8 @@ cd /data/govee-h5074-bridge
 ```
 
 `install.sh` symlinks `service/` into `/service/govee-h5074-bridge`
-(runit picks it up within ~5 seconds) and copies the velib_python helpers.
+(daemontools' `svscan` picks it up within ~5 seconds) and copies the
+velib_python helpers.
 
 To survive firmware updates, ensure `/data/rc.local` contains:
 
@@ -47,5 +48,5 @@ instance via localsettings:
 
 ```sh
 dbus -y com.victronenergy.settings /Settings/Devices/govee_<slug> RemoveSettings
-sv restart /service/govee-h5074-bridge
+svc -t /service/govee-h5074-bridge
 ```
