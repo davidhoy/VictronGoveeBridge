@@ -60,33 +60,22 @@ def decode_h5074(payload: bytes):
 
 def decode_h5075(payload: bytes):
     """Decode a Govee H5075 manufacturer-data payload.
-    
-    H5075 payload structure is still being reverse-engineered.
-    Trying H5074-compatible layout first with validation.
-    
+
     Layout after the 0xEC88 company ID:
-      [0]   prefix (0x00)
-      [1:3] temperature, int16 LE
-      [3:5] humidity,    uint16 LE
-      [5]   battery percent
-    
+      [0]     prefix (0x00)
+      [1:4]   combined big-endian uint24:
+                temp_raw  = combined // 1000  (tenths of °C)
+                hum_raw   = combined  % 1000  (tenths of %)
+      [4]     battery percent
     Returns (temp_c, humidity, battery) or None.
     """
-    if len(payload) < 6:
+    if len(payload) < 5:
         return None
-    # Try little-endian first
-    temp_raw, hum_raw, battery = struct.unpack_from("<hHB", payload, 1)
-    temp_c = temp_raw / 100.0
-    humidity = hum_raw / 100.0
-    if -50 <= temp_c <= 100 and 0 <= humidity <= 200:
-        return temp_c, humidity, battery
-    # Try big-endian
-    temp_raw, hum_raw, battery = struct.unpack_from(">hHB", payload, 1)
-    temp_c = temp_raw / 100.0
-    humidity = hum_raw / 100.0
-    if -50 <= temp_c <= 100 and 0 <= humidity <= 200:
-        return temp_c, humidity, battery
-    return None
+    b1, b2, b3, battery = struct.unpack_from("BBBB", payload, 1)
+    combined = (b1 << 16) | (b2 << 8) | b3
+    temp_c = (combined // 1000) / 10.0
+    humidity = (combined % 1000) / 10.0
+    return temp_c, humidity, battery
 
 
 def mac_to_slug(mac: str) -> str:
@@ -116,6 +105,7 @@ class GoveeSensor:
         self.slug = mac_to_slug(mac)
         self.settings_root = f"/Settings/Devices/govee_{self.slug}"
         self.last_seen: float = 0.0
+        self.decoder = decode_h5075 if "H5075" in friendly_name.upper() else decode_h5074
 
         seed = instance_seed(mac)
         self.settings = SettingsDevice(
@@ -388,17 +378,11 @@ class GoveeBridge:
         if payload is None:
             return
         raw = bytes(payload)
-        # Route to appropriate decoder based on model name
-        if "H5075" in (name or "").upper():
-            decoded = decode_h5075(raw)
-        else:
-            decoded = decode_h5074(raw)
-        if decoded is None:
-            return
-        temp_c, humidity, battery = decoded
 
         sensor = self.sensors.get(mac.upper())
         if sensor is None:
+            if not name:
+                return
             if not is_supported_model_name(name):
                 if mac.upper() not in self.ignored_macs:
                     self.ignored_macs.add(mac.upper())
@@ -417,9 +401,14 @@ class GoveeBridge:
                 log.exception("failed to register sensor %s", mac)
                 return
             self.sensors[mac.upper()] = sensor
-            log.info("discovered new H5074 %s (%s) as DeviceInstance %d",
+            log.info("discovered new %s %s (%s) as DeviceInstance %d",
+                     "H5075" if sensor.decoder is decode_h5075 else "H5074",
                      mac, friendly, sensor.device_instance)
 
+        decoded = sensor.decoder(raw)
+        if decoded is None:
+            return
+        temp_c, humidity, battery = decoded
         sensor.update(temp_c, humidity, battery)
 
 
