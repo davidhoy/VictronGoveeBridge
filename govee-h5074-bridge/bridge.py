@@ -30,6 +30,7 @@ GOVEE_COMPANY_ID = 0xEC88
 PRODUCT_ID = 0xB034  # arbitrary, only used for /ProductId
 PROCESS_VERSION = "0.1.0"
 STALE_AFTER_S = 600  # mark /Connected=0 if no ad for 10 min
+PRUNE_AFTER_S = int(os.getenv("GOVEE_PRUNE_AFTER_S", "172800"))
 
 log = logging.getLogger("govee-bridge")
 
@@ -68,27 +69,27 @@ class GoveeSensor:
     def __init__(self, mac: str, friendly_name: str, settings_bus: dbus.Bus) -> None:
         self.mac = mac
         self.slug = mac_to_slug(mac)
+        self.settings_root = f"/Settings/Devices/govee_{self.slug}"
         self.last_seen: float = 0.0
 
         seed = instance_seed(mac)
-        settings_root = f"/Settings/Devices/govee_{self.slug}"
         self.settings = SettingsDevice(
             bus=settings_bus,
             supportedSettings={
                 "instance": [
-                    f"{settings_root}/ClassAndVrmInstance",
+                    f"{self.settings_root}/ClassAndVrmInstance",
                     f"temperature:{seed}",
                     0,
                     0,
                 ],
                 "customname": [
-                    f"{settings_root}/CustomName",
+                    f"{self.settings_root}/CustomName",
                     friendly_name,
                     0,
                     0,
                 ],
                 "temperaturetype": [
-                    f"{settings_root}/TemperatureType",
+                    f"{self.settings_root}/TemperatureType",
                     2,  # 2 = generic; user can change in the GUI
                     0,
                     5,
@@ -184,6 +185,25 @@ class GoveeSensor:
                 self.svc["/Connected"] = 0
                 self.svc["/Status"] = 10  # 10 = "not connected"
 
+    def should_prune(self, now: float) -> bool:
+        if PRUNE_AFTER_S <= 0 or not self.last_seen:
+            return False
+        return now - self.last_seen > PRUNE_AFTER_S
+
+    def shutdown(self) -> None:
+        try:
+            if hasattr(self.svc, "unregister"):
+                self.svc.unregister()
+            elif hasattr(self.svc, "__del__"):
+                self.svc.__del__()
+        except Exception:
+            log.exception("failed to unregister service for %s", self.mac)
+        try:
+            if hasattr(self._svc_bus, "close"):
+                self._svc_bus.close()
+        except Exception:
+            log.exception("failed to close private D-Bus connection for %s", self.mac)
+
 
 class GoveeBridge:
     def __init__(self) -> None:
@@ -243,7 +263,22 @@ class GoveeBridge:
         now = time.monotonic()
         for s in self.sensors.values():
             s.check_stale(now)
+
+        to_remove = [mac for mac, s in self.sensors.items() if s.should_prune(now)]
+        for mac in to_remove:
+            sensor = self.sensors.pop(mac)
+            log.info("pruning stale sensor %s after %ds", mac, int(now - sensor.last_seen))
+            sensor.shutdown()
+            self._remove_persisted_settings(sensor.settings_root)
         return True
+
+    def _remove_persisted_settings(self, settings_root: str) -> None:
+        try:
+            obj = self.bus.get_object("com.victronenergy.settings", settings_root)
+            iface = dbus.Interface(obj, "com.victronenergy.BusItem")
+            iface.RemoveSettings()
+        except Exception:
+            log.exception("failed removing localsettings branch %s", settings_root)
 
     def _path_to_mac(self, path: str) -> Optional[str]:
         # /org/bluez/hci0/dev_A4_C1_38_20_60_85

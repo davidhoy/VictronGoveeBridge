@@ -41,6 +41,20 @@ ln -sf /data/govee-h5074-bridge/service /service/govee-h5074-bridge
 tail -F /var/log/govee-h5074-bridge/current
 ```
 
+## Automatic stale cleanup
+
+Sensors are marked disconnected after 10 minutes without advertisements.
+By default, they are then pruned (D-Bus service removed and localsettings
+branch deleted) after 48 hours without advertisements.
+
+Set an override before service start if you want a different prune window:
+
+```sh
+export GOVEE_PRUNE_AFTER_S=21600   # 6 hours
+```
+
+Set to `0` or a negative value to disable auto-prune.
+
 ## Removing a sensor
 
 If you replace a sensor or want to drop a stale one, remove its D-Bus
