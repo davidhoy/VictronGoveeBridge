@@ -33,6 +33,11 @@ STALE_AFTER_S = 600  # mark /Connected=0 if no ad for 10 min
 PRUNE_AFTER_S = int(os.getenv("GOVEE_PRUNE_AFTER_S", "172800"))
 BLUEZ_INIT_RETRIES = int(os.getenv("GOVEE_BLUEZ_INIT_RETRIES", "30"))
 BLUEZ_INIT_DELAY_S = float(os.getenv("GOVEE_BLUEZ_INIT_DELAY_S", "2"))
+SUPPORTED_MODEL_TOKENS = tuple(
+    t.strip().upper()
+    for t in os.getenv("GOVEE_SUPPORTED_MODEL_TOKENS", "H5074,H5075").split(",")
+    if t.strip()
+)
 
 log = logging.getLogger("govee-bridge")
 
@@ -53,6 +58,37 @@ def decode_h5074(payload: bytes):
     return temp_raw / 100.0, hum_raw / 100.0, battery
 
 
+def decode_h5075(payload: bytes):
+    """Decode a Govee H5075 manufacturer-data payload.
+    
+    H5075 payload structure is still being reverse-engineered.
+    Trying H5074-compatible layout first with validation.
+    
+    Layout after the 0xEC88 company ID:
+      [0]   prefix (0x00)
+      [1:3] temperature, int16 LE
+      [3:5] humidity,    uint16 LE
+      [5]   battery percent
+    
+    Returns (temp_c, humidity, battery) or None.
+    """
+    if len(payload) < 6:
+        return None
+    # Try little-endian first
+    temp_raw, hum_raw, battery = struct.unpack_from("<hHB", payload, 1)
+    temp_c = temp_raw / 100.0
+    humidity = hum_raw / 100.0
+    if -50 <= temp_c <= 100 and 0 <= humidity <= 200:
+        return temp_c, humidity, battery
+    # Try big-endian
+    temp_raw, hum_raw, battery = struct.unpack_from(">hHB", payload, 1)
+    temp_c = temp_raw / 100.0
+    humidity = hum_raw / 100.0
+    if -50 <= temp_c <= 100 and 0 <= humidity <= 200:
+        return temp_c, humidity, battery
+    return None
+
+
 def mac_to_slug(mac: str) -> str:
     return mac.replace(":", "").lower()
 
@@ -65,6 +101,13 @@ def instance_seed(mac: str) -> int:
     """
     s = mac_to_slug(mac)
     return 40 + (int(s[-6:], 16) % 210)
+
+
+def is_supported_model_name(name: str) -> bool:
+    if not SUPPORTED_MODEL_TOKENS:
+        return True
+    n = (name or "").upper()
+    return any(token in n for token in SUPPORTED_MODEL_TOKENS)
 
 
 class GoveeSensor:
@@ -211,6 +254,7 @@ class GoveeBridge:
     def __init__(self) -> None:
         self.bus = dbus.SystemBus()
         self.sensors: Dict[str, GoveeSensor] = {}
+        self.ignored_macs = set()
         self.adapter = None
         self.om = None
 
@@ -344,13 +388,28 @@ class GoveeBridge:
         if payload is None:
             return
         raw = bytes(payload)
-        decoded = decode_h5074(raw)
+        # Route to appropriate decoder based on model name
+        if "H5075" in (name or "").upper():
+            decoded = decode_h5075(raw)
+        else:
+            decoded = decode_h5074(raw)
         if decoded is None:
             return
         temp_c, humidity, battery = decoded
 
         sensor = self.sensors.get(mac.upper())
         if sensor is None:
+            if not is_supported_model_name(name):
+                if mac.upper() not in self.ignored_macs:
+                    self.ignored_macs.add(mac.upper())
+                    log.warning(
+                        "ignoring unsupported Govee model '%s' at %s (payload=%s); "
+                        "set GOVEE_SUPPORTED_MODEL_TOKENS to include it once decoder is known",
+                        name,
+                        mac,
+                        raw.hex(),
+                    )
+                return
             friendly = name or f"Govee H5074 {mac[-5:]}"
             try:
                 sensor = GoveeSensor(mac.upper(), friendly, self.bus)

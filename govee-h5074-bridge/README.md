@@ -63,6 +63,19 @@ export GOVEE_BLUEZ_INIT_RETRIES=30
 export GOVEE_BLUEZ_INIT_DELAY_S=2
 ```
 
+## Model support
+
+The bridge now supports both H5074 and H5075 models. The H5075 decoder is still being
+reverse-engineered; it tries both little-endian and big-endian interpretations of
+the manufacturer-data payload and picks the one that produces physically plausible values
+(temperature −50 to 100°C, humidity 0 to 200%).
+
+To override which models are onboarded:
+
+```sh
+export GOVEE_SUPPORTED_MODEL_TOKENS=H5074,H5075
+```
+
 ## Removing a sensor
 
 If you replace a sensor or want to drop a stale one, remove its D-Bus
