@@ -18,9 +18,7 @@ done
 ln -sf "$ROOT/service" /service/govee-h5074-bridge
 
 # Venus OS uses daemontools (svscan); it picks up new /service entries
-# automatically within a few seconds. Nudge it just in case.
-svscanboot >/dev/null 2>&1 &
-sleep 2
+# automatically within a few seconds.
 svc -u /service/govee-h5074-bridge 2>/dev/null || true
 
 echo "govee-h5074-bridge installed at /service/govee-h5074-bridge"
