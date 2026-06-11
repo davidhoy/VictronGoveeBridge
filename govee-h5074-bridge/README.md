@@ -55,6 +55,14 @@ export GOVEE_PRUNE_AFTER_S=21600   # 6 hours
 
 Set to `0` or a negative value to disable auto-prune.
 
+If BlueZ is slow to come up at boot, the bridge retries hci0 init before
+failing. Defaults are 30 attempts with a 2-second delay:
+
+```sh
+export GOVEE_BLUEZ_INIT_RETRIES=30
+export GOVEE_BLUEZ_INIT_DELAY_S=2
+```
+
 ## Removing a sensor
 
 If you replace a sensor or want to drop a stale one, remove its D-Bus

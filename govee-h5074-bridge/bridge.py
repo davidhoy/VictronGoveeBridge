@@ -31,6 +31,8 @@ PRODUCT_ID = 0xB034  # arbitrary, only used for /ProductId
 PROCESS_VERSION = "0.1.0"
 STALE_AFTER_S = 600  # mark /Connected=0 if no ad for 10 min
 PRUNE_AFTER_S = int(os.getenv("GOVEE_PRUNE_AFTER_S", "172800"))
+BLUEZ_INIT_RETRIES = int(os.getenv("GOVEE_BLUEZ_INIT_RETRIES", "30"))
+BLUEZ_INIT_DELAY_S = float(os.getenv("GOVEE_BLUEZ_INIT_DELAY_S", "2"))
 
 log = logging.getLogger("govee-bridge")
 
@@ -209,17 +211,36 @@ class GoveeBridge:
     def __init__(self) -> None:
         self.bus = dbus.SystemBus()
         self.sensors: Dict[str, GoveeSensor] = {}
+        self.adapter = None
+        self.om = None
 
-        self.adapter = dbus.Interface(
-            self.bus.get_object("org.bluez", "/org/bluez/hci0"),
-            "org.bluez.Adapter1",
-        )
-        self.om = dbus.Interface(
-            self.bus.get_object("org.bluez", "/"),
-            "org.freedesktop.DBus.ObjectManager",
-        )
+    def _connect_bluez(self) -> bool:
+        try:
+            self.adapter = dbus.Interface(
+                self.bus.get_object("org.bluez", "/org/bluez/hci0"),
+                "org.bluez.Adapter1",
+            )
+            self.om = dbus.Interface(
+                self.bus.get_object("org.bluez", "/"),
+                "org.freedesktop.DBus.ObjectManager",
+            )
+            return True
+        except dbus.exceptions.DBusException as exc:
+            log.warning("BlueZ not ready on hci0 yet: %s", exc)
+            self.adapter = None
+            self.om = None
+            return False
 
     def start(self) -> None:
+        for attempt in range(1, max(BLUEZ_INIT_RETRIES, 1) + 1):
+            if self._connect_bluez():
+                break
+            if attempt == max(BLUEZ_INIT_RETRIES, 1):
+                raise RuntimeError(
+                    f"BlueZ hci0 unavailable after {attempt} attempts"
+                )
+            time.sleep(max(BLUEZ_INIT_DELAY_S, 0.1))
+
         try:
             self.adapter.SetDiscoveryFilter(
                 {
