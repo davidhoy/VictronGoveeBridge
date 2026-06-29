@@ -1,6 +1,6 @@
-# Govee H5074 → Cerbo GX bridge
+# Govee H5074/H5075 → Cerbo GX bridge
 
-Listens for Govee H5074 BLE advertisements on the Cerbo GX MK2's
+Listens for Govee H5074/H5075 BLE advertisements on the Cerbo GX MK2's
 on-board BLE radio and registers each sensor as a
 `com.victronenergy.temperature.*` D-Bus service, so it appears under
 **Settings → I/O → Sensors** in Remote Console.
@@ -25,15 +25,17 @@ cd /data/govee-h5074-bridge
 ```
 
 `install.sh` symlinks `service/` into `/service/govee-h5074-bridge`
-(daemontools' `svscan` picks it up within ~5 seconds) and copies the
-velib_python helpers.
-
-To survive firmware updates, ensure `/data/rc.local` contains:
+(daemontools' `svscan` picks it up within ~5 seconds), copies the
+velib_python helpers, and idempotently ensures `/data/rc.local` contains
+the reinstall hook:
 
 ```sh
-ln -sf /data/govee-h5074-bridge/service /service/govee-h5074-bridge
 /data/govee-h5074-bridge/install.sh >/var/log/govee-h5074-bridge-reinstall.log 2>&1
 ```
+
+This makes the bridge self-heal across reboots and firmware updates.
+The installer also exits early unless it detects a Venus OS host and is
+run as root.
 
 ## Logs
 
@@ -65,10 +67,17 @@ export GOVEE_BLUEZ_INIT_DELAY_S=2
 
 ## Model support
 
-The bridge now supports both H5074 and H5075 models. The H5075 decoder is still being
-reverse-engineered; it tries both little-endian and big-endian interpretations of
-the manufacturer-data payload and picks the one that produces physically plausible values
-(temperature −50 to 100°C, humidity 0 to 200%).
+The bridge supports both H5074 and H5075 models.
+
+H5074 decode uses `int16`/`uint16` little-endian fields for temperature
+and humidity (both scaled by 100), plus battery percent.
+
+H5075 decode uses a 24-bit big-endian combined field where:
+
+* `combined // 1000` = temperature in tenths of °C
+* `combined % 1000` = humidity in tenths of %
+
+and a trailing battery percent byte.
 
 To override which models are onboarded:
 
